@@ -1,0 +1,47 @@
+plugins {
+    id("com.android.application")
+}
+
+android {
+    enableKotlin = false
+    namespace = "org.lsposed.dirtysepolicy"
+    defaultConfig {
+        versionCode = 1
+        versionName = "1.0"
+    }
+    buildTypes {
+        release {
+            vcsInfo.include = false
+            signingConfig = signingConfigs["debug"]
+            optimization {
+                enable = true
+                keepRules {
+                    ignoreFromAllExternalDependencies = true
+                    includeDefault = false
+                }
+            }
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+    buildFeatures {
+        aidl = true
+    }
+    packaging {
+        resources {
+            excludes += "**"
+        }
+    }
+    lint {
+        checkReleaseBuilds = false
+    }
+    dependenciesInfo {
+        includeInApk = false
+    }
+}
+
+dependencies {
+    compileOnly(projects.stub)
+}
