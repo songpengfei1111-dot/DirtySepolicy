@@ -17,13 +17,7 @@ The detection utilizes the **App Zygote** process. An App Zygote is an applicati
 To function correctly, the App Zygote must transition into the restricted context of the isolated service. Because of this requirement, it is indispensable for it to have the permission to [query and check SELinux access rules](https://android.googlesource.com/platform/system/sepolicy/+/master/private/app_zygote.te#:~:text=%23%20Check%20validity%20of%20SELinux,selinux_check_access(app_zygote)). 
 This inherent design makes it the perfect candidate to query SELinux without being restricted by normal untrusted app constraints.
 
-In this implementation, the `AppZygote` uses the `SELinux.checkSELinuxAccess` API to analyze the system's global SELinux policies for "dirty" rules injected by common root and hooking solutions. 
-Currently, the source code specifically checks if:
-- `system_server` processes have `execmem` permission.
-- `untrusted_app` processes can `call` the `magisk` binder (identifying Magisk).
-- `untrusted_app` processes can `call` the `ksu` binder (identifying KernelSU).
-- `untrusted_app` processes can `read` `lsposed_file` (identifying LSPosed).
-
+In this implementation, the `AppZygote` uses the `SELinux.checkSELinuxAccess` API to analyze the system's global SELinux policies for "dirty" rules injected by common root and hooking solutions.
 Developers can easily extend this implementation by adding the specific SELinux rule characteristics of other future popular su solutions or root tools. 
 Because the app zygote and zygote share code, SELinux permissions must be checked, otherwise, the process will crash, so this detection cannot be bypassed in userspace. 
 The only way to circumvent this detection is by modifying the kernel itself.
