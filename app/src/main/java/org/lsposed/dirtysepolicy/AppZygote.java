@@ -21,17 +21,17 @@ public final class AppZygote implements ZygotePreload {
             return;
         }
         var context = SELinux.getContext();
-        if (!context.startsWith("u:r:app_zygote:s0")) {
+        if (context == null || !context.startsWith("u:r:app_zygote:s0")) {
             result = "ERROR: unexpected SELinux context: " + context;
             return;
         }
         var pidContext = SELinux.getPidContext(Os.getpid());
-        if (!pidContext.equals(context)) {
+        if (!context.equals(pidContext)) {
             result = "ERROR: PID context mismatch: " + pidContext;
             return;
         }
         var procContext = SELinux.getFileContext("/proc/self");
-        if (!procContext.equals(context)) {
+        if (!context.equals(procContext)) {
             result = "ERROR: /proc/self context mismatch: " + procContext;
             return;
         }
