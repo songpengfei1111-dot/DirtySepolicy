@@ -22,6 +22,19 @@ Developers can easily extend this implementation by adding the specific SELinux 
 Because the app zygote and zygote share code, SELinux permissions must be checked, otherwise, the process will crash, so this detection cannot be bypassed in userspace. 
 The only way to circumvent this detection is by modifying the kernel itself.
 
+In addition to querying access-vector decisions, the implementation also probes `/proc/self/attr/current` from the app zygote. This file represents the process's current SELinux context. Writing a context string to it asks the kernel to perform a dynamic context transition.
+On a clean device, contexts such as `u:r:ksu:s0`, `u:r:ksu_file:s0`, `u:r:magisk:s0`, `u:r:magisk_file:s0`, `u:r:lsposed_file:s0`, and `u:r:xposed_data:s0` should either not exist or should not be valid transition targets for `app_zygote`. Therefore, the expected result is `EINVAL`, which means the requested context is invalid for this transition. This is treated as the normal, non-detected result.
+If a userspace root or hooking solution injects live SELinux policy for its own domain or file type, the same write may stop failing with `EINVAL`. A successful write, a non-`EINVAL` errno, or a security exception indicates that the probed context is recognized differently by the live policy, so the corresponding solution is reported as detected.
+
+Currently implemented `/proc/self/attr/current` probes include:
+
+- `u:r:ksu:s0` -> `found KernelSU`
+- `u:r:ksu_file:s0` -> `found KernelSU`
+- `u:r:magisk:s0` -> `found Magisk`
+- `u:r:magisk_file:s0` -> `found Magisk`
+- `u:r:lsposed_file:s0` -> `found LSPosed`
+- `u:r:xposed_data:s0` -> `found Xposed`
+
 ## License
 
 Licensed under the Apache License, Version 2.0 (the "License");
