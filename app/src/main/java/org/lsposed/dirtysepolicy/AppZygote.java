@@ -3,14 +3,19 @@ package org.lsposed.dirtysepolicy;
 import android.app.ZygotePreload;
 import android.content.pm.ApplicationInfo;
 import android.os.Build;
+import android.os.ParcelFileDescriptor;
 import android.os.SELinux;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
+import android.util.Log;
 
+import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class AppZygote implements ZygotePreload {
     private static final String KSU_CONTEXT = "u:r:ksu:s0";
@@ -29,14 +34,20 @@ public final class AppZygote implements ZygotePreload {
     static volatile ProcAttrCurrentResult lsposedFileProcAttrCurrentResult = ProcAttrCurrentResult.notRun(LSPOSED_FILE_CONTEXT);
     static volatile ProcAttrCurrentResult xposedDataProcAttrCurrentResult = ProcAttrCurrentResult.notRun(XPOSED_DATA_CONTEXT);
 
-    @Override
-    public void doPreload(ApplicationInfo appInfo) {
-        debug = (appInfo.flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
-        var uid = Os.getuid();
-        if (uid != appInfo.uid) {
-            result = "ERROR: UID mismatch: " + uid + " != app uid " + appInfo.uid;
-            return;
+    private static Map<Integer, String> scanFd() {
+        var result = new HashMap<Integer, String>();
+        for (var f: new File("/proc/self/fd").listFiles()) {
+            var fdNum = Integer.parseInt(f.getName());
+            try {
+                var path = Os.readlink(f.getAbsolutePath());
+                result.put(fdNum, path);
+            } catch (Throwable ignored) {
+            }
         }
+        return result;
+    }
+
+    private static void doDetect() {
         if (!SELinux.isSELinuxEnabled()) {
             result = "ERROR: SELinux is disabled";
             return;
@@ -123,6 +134,50 @@ public final class AppZygote implements ZygotePreload {
                     + lsposedFileProcAttrCurrentResult.formatMultiline("A lsposed_file") + "\n\n"
                     + xposedDataProcAttrCurrentResult.formatMultiline("A xposed_data") + "\n\n"
                     + result + "\n\n\n\n";
+        }
+    }
+
+    @Override
+    public void doPreload(ApplicationInfo appInfo) {
+        debug = (appInfo.flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        var uid = Os.getuid();
+        if (uid != appInfo.uid) {
+            result = "ERROR: UID mismatch: " + uid + " != app uid " + appInfo.uid;
+            return;
+        }
+        var preFds = scanFd();
+        try {
+            doDetect();
+        } finally {
+            // find selinux netlink socket and dup it with a valid fd
+            // https://cs.android.com/android/platform/superproject/+/android-11.0.0_r21:external/selinux/libselinux/src/checkAccess.c;l=22
+            // SELinux netlink socket may be created when selinux_check_access is called
+            // Before Android 13, this socket is always created
+            // This fd will be rejected when fork new app process, and crash app zygote
+            // App zygote can mark fds created during doPreload, but only after A12
+            // https://cs.android.com/android/platform/superproject/+/android-12.0.0_r3:frameworks/base/core/java/com/android/internal/os/AppZygoteInit.java;l=94-96;drc=ff6ac69e69423107a626a00c3e01e9bf5eb2814c
+            // https://cs.android.com/android/platform/superproject/+/android-11.0.0_r21:frameworks/base/core/java/com/android/internal/os/AppZygoteInit.java;l=79;drc=fb7caa96f9511273ef32e1e80b740b28ca91a536
+            var postFds = scanFd();
+            boolean found = false;
+            for (var e: postFds.entrySet()) {
+                if (!e.getValue().startsWith("socket:[")) continue;
+                if (preFds.containsKey(e.getKey()) && preFds.get(e.getKey()).equals(e.getValue())) {
+                    continue;
+                }
+                Log.d("DirtySepolicy", "selinux netlink socket fd: " + e.getKey());
+                found = true;
+                try {
+                    var newFd = Os.open("/dev/null", OsConstants.O_RDWR, 0);
+                    Os.dup2(newFd, e.getKey());
+                    Os.close(newFd);
+                } catch (Throwable t) {
+                    Log.e("DirtySepolicy", "dup selinux netlink socket fd err: " + e.getKey(), t);
+                }
+            }
+            if (!found) {
+                // It's normal to be not found after A13
+                Log.w("DirtySepolicy", "selinux netlink socket fd not found! ");
+            }
         }
     }
 
