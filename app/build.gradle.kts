@@ -21,6 +21,9 @@ android {
                 }
             }
         }
+        debug {
+            versionNameSuffix = "-debug"
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
@@ -28,6 +31,7 @@ android {
     }
     buildFeatures {
         aidl = true
+        buildConfig = true
     }
     packaging {
         resources {

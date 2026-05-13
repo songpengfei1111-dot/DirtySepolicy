@@ -40,6 +40,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getActionBar().setSubtitle(BuildConfig.VERSION_NAME);
         var layout = new RelativeLayout(this);
         textView = new TextView(this);
         textView.setTextIsSelectable(true);
