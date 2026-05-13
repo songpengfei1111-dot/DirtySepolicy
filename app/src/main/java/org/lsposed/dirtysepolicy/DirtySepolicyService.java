@@ -2,12 +2,10 @@ package org.lsposed.dirtysepolicy;
 
 import android.app.Service;
 import android.content.Intent;
-import android.content.pm.ApplicationInfo;
 import android.os.IBinder;
 import android.os.Process;
 
 public class DirtySepolicyService extends Service {
-
     private final IDirtySepolicyService.Stub binder = new IDirtySepolicyService.Stub() {
         @Override
         public String getResult() {
@@ -24,4 +22,3 @@ public class DirtySepolicyService extends Service {
         }
     }
 }
-

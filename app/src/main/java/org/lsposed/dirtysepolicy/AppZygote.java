@@ -3,7 +3,6 @@ package org.lsposed.dirtysepolicy;
 import android.app.ZygotePreload;
 import android.content.pm.ApplicationInfo;
 import android.os.Build;
-import android.os.ParcelFileDescriptor;
 import android.os.SELinux;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -11,205 +10,151 @@ import android.system.OsConstants;
 import android.util.Log;
 
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.HashSet;
 
 public final class AppZygote implements ZygotePreload {
-    private static final String KSU_CONTEXT = "u:r:ksu:s0";
-    private static final String KSU_FILE_CONTEXT = "u:r:ksu_file:s0";
-    private static final String MAGISK_CONTEXT = "u:r:magisk:s0";
-    private static final String MAGISK_FILE_CONTEXT = "u:r:magisk_file:s0";
-    private static final String LSPOSED_FILE_CONTEXT = "u:r:lsposed_file:s0";
-    private static final String XPOSED_DATA_CONTEXT = "u:r:xposed_data:s0";
-
+    private final static String TAG = "DirtySepolicy";
     static String result = "ERROR: app zygote not called";
-    static volatile boolean debug = false;
-    static volatile ProcAttrCurrentResult ksuProcAttrCurrentResult = ProcAttrCurrentResult.notRun(KSU_CONTEXT);
-    static volatile ProcAttrCurrentResult ksuFileProcAttrCurrentResult = ProcAttrCurrentResult.notRun(KSU_FILE_CONTEXT);
-    static volatile ProcAttrCurrentResult magiskProcAttrCurrentResult = ProcAttrCurrentResult.notRun(MAGISK_CONTEXT);
-    static volatile ProcAttrCurrentResult magiskFileProcAttrCurrentResult = ProcAttrCurrentResult.notRun(MAGISK_FILE_CONTEXT);
-    static volatile ProcAttrCurrentResult lsposedFileProcAttrCurrentResult = ProcAttrCurrentResult.notRun(LSPOSED_FILE_CONTEXT);
-    static volatile ProcAttrCurrentResult xposedDataProcAttrCurrentResult = ProcAttrCurrentResult.notRun(XPOSED_DATA_CONTEXT);
 
-    private static Map<Integer, String> scanFd() {
-        var result = new HashMap<Integer, String>();
-        for (var f: new File("/proc/self/fd").listFiles()) {
-            var fdNum = Integer.parseInt(f.getName());
-            try {
-                var path = Os.readlink(f.getAbsolutePath());
-                result.put(fdNum, path);
-            } catch (Throwable ignored) {
-            }
-        }
-        return result;
-    }
-
-    private static void doDetect() {
+    private String doCheck() {
         if (!SELinux.isSELinuxEnabled()) {
-            result = "ERROR: SELinux is disabled";
-            return;
+            return "ERROR: SELinux is disabled";
         }
         var context = SELinux.getContext();
         if (context == null || !context.startsWith("u:r:app_zygote:s0")) {
-            result = "ERROR: unexpected SELinux context: " + context;
-            return;
+            return "ERROR: unexpected SELinux context: " + context;
         }
         var pidContext = SELinux.getPidContext(Os.getpid());
         if (!context.equals(pidContext)) {
-            result = "ERROR: PID context mismatch: " + pidContext;
-            return;
+            return "ERROR: PID context mismatch: " + pidContext;
         }
         var procContext = SELinux.getFileContext("/proc/self");
         if (!context.equals(procContext)) {
-            result = "ERROR: /proc/self context mismatch: " + procContext;
-            return;
+            return "ERROR: /proc/self context mismatch: " + procContext;
         }
         if (!SELinux.isSELinuxEnforced()) {
-            result = "ERROR: SELinux is permissive";
-            return;
+            return "ERROR: SELinux is permissive";
         }
-        if (!SELinux.checkSELinuxAccess("u:r:app_zygote:s0", "u:r:isolated_app:s0", "process", "dyntransition")) {
-            result = "ERROR: cannot check SELinux access";
-            return;
+        if (!SELinux.checkSELinuxAccess("u:r:app_zygote:s0", "u:r:app_zygote:s0", "process", "setcurrent")) {
+            return "ERROR: cannot check SELinux access";
         }
-        ksuProcAttrCurrentResult = runProcAttrCurrentProbe(KSU_CONTEXT);
-        ksuFileProcAttrCurrentResult = runProcAttrCurrentProbe(KSU_FILE_CONTEXT);
-        magiskProcAttrCurrentResult = runProcAttrCurrentProbe(MAGISK_CONTEXT);
-        magiskFileProcAttrCurrentResult = runProcAttrCurrentProbe(MAGISK_FILE_CONTEXT);
-        lsposedFileProcAttrCurrentResult = runProcAttrCurrentProbe(LSPOSED_FILE_CONTEXT);
-        xposedDataProcAttrCurrentResult = runProcAttrCurrentProbe(XPOSED_DATA_CONTEXT);
+        if (!SELinux.checkSELinuxAccess("u:r:app_zygote:s0", "u:r:kernel:s0", "security", "check_context")) {
+            return "ERROR: cannot check SELinux context";
+        }
         var sb = new StringBuilder();
-        if (ksuProcAttrCurrentResult.detected() || ksuFileProcAttrCurrentResult.detected()) {
-            sb.append("found KernelSU; ");
-        }
-        if (magiskProcAttrCurrentResult.detected() || magiskFileProcAttrCurrentResult.detected()) {
-            sb.append("found Magisk; ");
-        }
-        if (lsposedFileProcAttrCurrentResult.detected()) {
-            sb.append("found LSPosed; ");
-        }
-        if (xposedDataProcAttrCurrentResult.detected()) {
-            sb.append("found Xposed; ");
-        }
         if (SELinux.checkSELinuxAccess("u:r:system_server:s0", "u:r:system_server:s0", "process", "execmem")) {
             sb.append("system_server can execmem; ");
-        }
-        if (SELinux.checkSELinuxAccess("u:r:fsck_untrusted:s0", "u:r:fsck_untrusted:s0", "capability", "sys_admin")) {
-            sb.append("neverallow violated; ");
         }
         if (Build.TYPE.equals("user") && SELinux.checkSELinuxAccess("u:r:shell:s0", "u:r:su:s0", "process", "transition")) {
             sb.append("found AOSP su in user build; ");
         }
-        if (SELinux.checkSELinuxAccess("u:r:adbd:s0", "u:r:adbroot:s0", "binder", "call")) {
+        if (contextExists("u:r:adbroot:s0")
+                || SELinux.checkSELinuxAccess("u:r:adbd:s0", "u:r:adbroot:s0", "binder", "call")) {
             sb.append("found adb_root; ");
         }
-        if (SELinux.checkSELinuxAccess("u:r:untrusted_app:s0", "u:r:magisk:s0", "binder", "call")) {
+        if (contextExists("u:r:magisk:s0") || contextExists("u:object_r:magisk_file:s0")
+                || SELinux.checkSELinuxAccess("u:r:untrusted_app:s0", "u:object_r:magisk_file:s0", "file", "read")
+                || SELinux.checkSELinuxAccess("u:object_r:rootfs:s0", "u:object_r:tmpfs:s0", "filesystem", "associate")
+                || SELinux.checkSELinuxAccess("u:r:kernel:s0", "u:object_r:tmpfs:s0", "fifo_file", "open")) {
             sb.append("found Magisk; ");
         }
-        if (SELinux.checkSELinuxAccess("u:r:untrusted_app:s0", "u:object_r:ksu_file:s0", "file", "read")) {
+        if (contextExists("u:r:ksu:s0") || contextExists("u:object_r:ksu_file:s0")
+                || SELinux.checkSELinuxAccess("u:r:kernel:s0", "u:object_r:adb_data_file:s0", "file", "read")
+                || SELinux.checkSELinuxAccess("u:r:untrusted_app:s0", "u:object_r:ksu_file:s0", "file", "read")) {
             sb.append("found KernelSU; ");
         }
-        if (SELinux.checkSELinuxAccess("u:r:untrusted_app:s0", "u:object_r:lsposed_file:s0", "file", "read")) {
+        if (contextExists("u:object_r:lsposed_file:s0")
+                || SELinux.checkSELinuxAccess("u:r:untrusted_app:s0", "u:object_r:lsposed_file:s0", "file", "read")
+                || SELinux.checkSELinuxAccess("u:r:system_server:s0", "u:object_r:apk_data_file:s0", "file", "execute")) {
             sb.append("found LSPosed; ");
         }
-        if (SELinux.checkSELinuxAccess("u:r:untrusted_app:s0", "u:object_r:xposed_data:s0", "file", "read")) {
+        if (contextExists("u:object_r:xposed_data:s0") || contextExists("u:object_r:xposed_file:s0")
+                || SELinux.checkSELinuxAccess("u:r:untrusted_app:s0", "u:object_r:xposed_data:s0", "file", "read")
+                || SELinux.checkSELinuxAccess("u:r:dex2oat:s0", "u:object_r:dex2oat_exec:s0", "file", "execute_no_trans")) {
             sb.append("found Xposed; ");
         }
         if (SELinux.checkSELinuxAccess("u:r:zygote:s0", "u:object_r:adb_data_file:s0", "dir", "search")) {
             sb.append("found ZygiskNext; ");
         }
         if (sb.length() == 0) {
-            result = "OK: no dirty sepolicy found";
+            return "OK: no dirty sepolicy found";
         } else {
-            result = "WARNING: " + sb;
-        }
-        if (debug) {
-            result = "\n\n\n\n\n\n" + ksuProcAttrCurrentResult.formatMultiline("A ksu") + "\n\n"
-                    + ksuFileProcAttrCurrentResult.formatMultiline("A ksu_file") + "\n\n"
-                    + magiskProcAttrCurrentResult.formatMultiline("A magisk") + "\n\n"
-                    + magiskFileProcAttrCurrentResult.formatMultiline("A magisk_file") + "\n\n"
-                    + lsposedFileProcAttrCurrentResult.formatMultiline("A lsposed_file") + "\n\n"
-                    + xposedDataProcAttrCurrentResult.formatMultiline("A xposed_data") + "\n\n"
-                    + result + "\n\n\n\n";
+            return "WARNING: " + sb;
         }
     }
 
     @Override
     public void doPreload(ApplicationInfo appInfo) {
-        debug = (appInfo.flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         var uid = Os.getuid();
         if (uid != appInfo.uid) {
             result = "ERROR: UID mismatch: " + uid + " != app uid " + appInfo.uid;
             return;
         }
-        var preFds = scanFd();
+
+        var fileSet = new HashSet<String>();
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+            var fds = new File("/proc/self/fd").listFiles(File::exists);
+            for (var fd : fds) {
+                fileSet.add(fd.getName());
+            }
+        }
+
         try {
-            doDetect();
+            result = doCheck();
+        } catch (RuntimeException e) {
+            result = "ERROR: " + e.getMessage();
+            Log.e(TAG, Log.getStackTraceString(e));
         } finally {
-            // find selinux netlink socket and dup it with a valid fd
-            // https://cs.android.com/android/platform/superproject/+/android-11.0.0_r21:external/selinux/libselinux/src/checkAccess.c;l=22
-            // SELinux netlink socket may be created when selinux_check_access is called
-            // Before Android 13, this socket is always created
-            // This fd will be rejected when fork new app process, and crash app zygote
-            // App zygote can mark fds created during doPreload, but only after A12
-            // https://cs.android.com/android/platform/superproject/+/android-12.0.0_r3:frameworks/base/core/java/com/android/internal/os/AppZygoteInit.java;l=94-96;drc=ff6ac69e69423107a626a00c3e01e9bf5eb2814c
-            // https://cs.android.com/android/platform/superproject/+/android-11.0.0_r21:frameworks/base/core/java/com/android/internal/os/AppZygoteInit.java;l=79;drc=fb7caa96f9511273ef32e1e80b740b28ca91a536
-            var postFds = scanFd();
-            boolean found = false;
-            for (var e: postFds.entrySet()) {
-                if (!e.getValue().startsWith("socket:[")) continue;
-                if (preFds.containsKey(e.getKey()) && preFds.get(e.getKey()).equals(e.getValue())) {
-                    continue;
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+                var fds = new File("/proc/self/fd").listFiles(File::exists);
+                for (var fd : fds) {
+                    if (fileSet.add(fd.getName())) {
+                        try {
+                            Os.dup2(FileDescriptor.in, Integer.parseInt(fd.getName()));
+                        } catch (ErrnoException e) {
+                            Log.e(TAG, "Close selinux netlink socket", e);
+                        }
+                    }
                 }
-                Log.d("DirtySepolicy", "selinux netlink socket fd: " + e.getKey());
-                found = true;
-                try {
-                    var newFd = Os.open("/dev/null", OsConstants.O_RDWR, 0);
-                    Os.dup2(newFd, e.getKey());
-                    Os.close(newFd);
-                } catch (Throwable t) {
-                    Log.e("DirtySepolicy", "dup selinux netlink socket fd err: " + e.getKey(), t);
-                }
-            }
-            if (!found) {
-                // It's normal to be not found after A13
-                Log.w("DirtySepolicy", "selinux netlink socket fd not found! ");
             }
         }
     }
 
-    private static ProcAttrCurrentResult runProcAttrCurrentProbe(String targetContext) {
-        try (var out = new FileOutputStream("/proc/self/attr/current")) {
-            Os.write(out.getFD(), targetContext.getBytes(StandardCharsets.UTF_8), 0, targetContext.getBytes(StandardCharsets.UTF_8).length);
-            return ProcAttrCurrentResult.success(targetContext, "write succeeded");
-        } catch (SecurityException e) {
-            return ProcAttrCurrentResult.security(targetContext, e.getClass().getSimpleName() + ": " + e.getMessage());
-        } catch (IOException e) {
-            return classifyIOException(targetContext, e);
+    private static boolean contextExists(String context) {
+        var data = context.getBytes(StandardCharsets.UTF_8);
+
+        try (var file = new FileOutputStream("/sys/fs/selinux/context")) {
+            Os.write(file.getFD(), data, 0, data.length);
+            return true;
         } catch (ErrnoException e) {
-            return classifyErrnoException(targetContext, e);
+            if (e.errno != OsConstants.EINVAL) {
+                throw new RuntimeException("security_check_context errno=" + e.errno, e);
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("security_check_context: " + e.getMessage(), e);
         }
-    }
 
-    private static ProcAttrCurrentResult classifyIOException(String targetContext, IOException e) {
-        var message = e.getMessage();
-        var detail = e.getClass().getSimpleName() + ": " + message;
-        if (message != null && message.toLowerCase().contains("invalid argument")) {
-            return ProcAttrCurrentResult.einval(targetContext, detail);
+        if (SELinux.checkSELinuxAccess("u:r:app_zygote:s0", context, "process", "dyntransition")) {
+            return true;
         }
-        return ProcAttrCurrentResult.nonEinval(targetContext, detail);
-    }
 
-    private static ProcAttrCurrentResult classifyErrnoException(String targetContext, ErrnoException e) {
-        var detail = e.getClass().getSimpleName() + ": errno=" + e.errno + ", " + e.getMessage();
-        if (e.errno == OsConstants.EINVAL) {
-            return ProcAttrCurrentResult.einval(targetContext, detail);
+        try (var current = new FileOutputStream("/proc/self/attr/current")) {
+            Os.write(current.getFD(), data, 0, data.length);
+            throw new RuntimeException("SELinux is broken");
+        } catch (ErrnoException e) {
+            if (e.errno == OsConstants.EINVAL) {
+                return false;
+            }
+            if (e.errno == OsConstants.EPERM) {
+                return true;
+            }
+            throw new RuntimeException("setcon errno=" + e.errno, e);
+        } catch (IOException e) {
+            throw new RuntimeException("setcon: " + e.getMessage(), e);
         }
-        return ProcAttrCurrentResult.nonEinval(targetContext, detail);
     }
 }
-
-
